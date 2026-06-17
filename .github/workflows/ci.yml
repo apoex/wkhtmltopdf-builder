@@ -1,0 +1,64 @@
+name: CI
+
+'on': [push, workflow_dispatch]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: Clone Repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      # build.sh runs `apk add` and expects a musl toolchain, so it must run
+      # inside Alpine 3.10 — no other version works (see readme.md). It runs via
+      # `docker run` rather than a job `container:` because the Node.js that
+      # GitHub injects to run JavaScript actions (checkout, upload-artifact) is
+      # built against a newer musl than Alpine 3.10 ships and cannot start
+      # there. Keeping those actions on the glibc host sidesteps that.
+      - name: Build wkhtmltopdf
+        run: |
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            alpine:3.10 \
+            ./build.sh
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: wkhtmltox-linux-x86_64
+          path: out/*
+          if-no-files-found: error
+
+      - name: Create Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github_ref_name: ${{ github.ref_name }}
+        run: |
+          version="${github_ref_name#v}"
+
+          # Package both binaries into a single archive so the release has one
+          # downloadable asset instead of two separate files.
+          archive="wkhtmltox-${version}-linux-x86_64.tar.gz"
+          tar -czf "$archive" -C out wkhtmltopdf wkhtmltoimage
+
+          # Extract the changelog section for this version and use it as the
+          # release notes. The release is created as a draft for review before
+          # publishing.
+          sed -n "/^## \[${version}\]/,/^## \[/{/^## \[${version}\]/d;/^## \[/d;p;}" changelog.md \
+            | gh release create \
+              "$github_ref_name" \
+              --title "wkhtmltopdf-builder ${version}" \
+              --draft \
+              --notes-file - \
+              "$archive"
