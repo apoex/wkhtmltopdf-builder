@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.12.5] - 2026-06-17
+## [0.12.5] - 2026-06-25
 ### Added
 - Build wkhtmltopdf and wkhtmltoimage as fully static x86-64 (musl) executables
 
