@@ -52,6 +52,15 @@ export CFLAGS="-w"
 export CXXFLAGS="-w"
 export PKG_CONFIG_PATH="/usr/lib/pkgconfig"
 
+# Downloads are the main source of CI flakiness: some upstream hosts throttle or
+# challenge requests coming from cloud IPs and answer with an HTTP error rather
+# than the tarball. Retry on those codes too (wget treats them as fatal by
+# default), and use -nv instead of -q so a fetch that does give up says why.
+fetch() {
+    wget -nv --tries=5 --waitretry=10 \
+        --retry-on-http-error=403,408,429,500,502,503,504 "$@"
+}
+
 # -----------------------------------------------------------------------------
 # Toolchain + build-time helpers. No -dev runtime libs: the static dependencies
 # are built from source below and install their own headers into /usr.
@@ -73,7 +82,7 @@ git config --global --add safe.directory '*'
 # -----------------------------------------------------------------------------
 echo "=== building openssl ${OPENSSL_VERSION} ==="
 cd /tmp
-wget -q "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
+fetch "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
 tar xf "openssl-${OPENSSL_VERSION}.tar.gz"
 ( cd "openssl-${OPENSSL_VERSION}" \
     && ./config no-shared no-tests no-async --prefix=/usr --openssldir=/etc/ssl \
@@ -88,7 +97,7 @@ cd /tmp
 # Fetched from the madler/zlib git tag archive rather than zlib.net, which
 # frequently refuses automated/cloud downloads (HTTP errors in CI). The tag
 # archive unpacks to zlib-${ZLIB_VERSION}/, matching the layout below.
-wget -q -O "zlib-${ZLIB_VERSION}.tar.gz" \
+fetch -O "zlib-${ZLIB_VERSION}.tar.gz" \
     "https://github.com/madler/zlib/archive/refs/tags/v${ZLIB_VERSION}.tar.gz"
 tar xf "zlib-${ZLIB_VERSION}.tar.gz"
 ( cd "zlib-${ZLIB_VERSION}" && ./configure --static --prefix=/usr && make -j"$JOBS" && make install )
@@ -96,7 +105,7 @@ rm -rf /tmp/zlib-*
 
 echo "=== building libpng ${LIBPNG_VERSION} ==="
 cd /tmp
-wget -q "https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz"
+fetch "https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz"
 tar xf "libpng-${LIBPNG_VERSION}.tar.xz"
 ( cd "libpng-${LIBPNG_VERSION}" \
     && ./configure --prefix=/usr --enable-static --disable-shared \
@@ -105,7 +114,7 @@ rm -rf /tmp/libpng-*
 
 echo "=== building libjpeg ${LIBJPEG_VERSION} ==="
 cd /tmp
-wget -q "https://www.ijg.org/files/jpegsrc.v${LIBJPEG_VERSION}.tar.gz"
+fetch "https://www.ijg.org/files/jpegsrc.v${LIBJPEG_VERSION}.tar.gz"
 tar xf "jpegsrc.v${LIBJPEG_VERSION}.tar.gz"
 ( cd "jpeg-${LIBJPEG_VERSION}" \
     && ./configure --prefix=/usr --enable-static --disable-shared \
@@ -115,7 +124,7 @@ rm -rf "/tmp/jpeg-${LIBJPEG_VERSION}" "/tmp/jpegsrc.v${LIBJPEG_VERSION}.tar.gz"
 echo "=== building expat ${EXPAT_VERSION} ==="
 cd /tmp
 EXPAT_TAG="R_$(echo "${EXPAT_VERSION}" | tr . _)"
-wget -q "https://github.com/libexpat/libexpat/releases/download/${EXPAT_TAG}/expat-${EXPAT_VERSION}.tar.xz"
+fetch "https://github.com/libexpat/libexpat/releases/download/${EXPAT_TAG}/expat-${EXPAT_VERSION}.tar.xz"
 tar xf "expat-${EXPAT_VERSION}.tar.xz"
 ( cd "expat-${EXPAT_VERSION}" \
     && ./configure --prefix=/usr --enable-static --disable-shared \
@@ -128,7 +137,7 @@ rm -rf /tmp/expat-*
 # everything else off.
 echo "=== building freetype ${FREETYPE_VERSION} ==="
 cd /tmp
-wget -q "https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz"
+fetch "https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.xz"
 tar xf "freetype-${FREETYPE_VERSION}.tar.xz"
 ( cd "freetype-${FREETYPE_VERSION}" \
     && ./configure --prefix=/usr --enable-static --disable-shared \
@@ -137,10 +146,19 @@ tar xf "freetype-${FREETYPE_VERSION}.tar.xz"
 rm -rf /tmp/freetype-*
 
 # fontconfig: needs expat + freetype; skip the install-time font-cache run.
+#
+# www.freedesktop.org sits behind an anti-crawler proxy that intermittently
+# answers cloud IPs with an HTTP error instead of the tarball (it failed CI this
+# way). If the retries above don't get through, fall back to Ubuntu's source
+# pool, which carries the same upstream release (identical contents, bzip2
+# instead of gzip — tar detects the compression, hence the neutral .tar name).
 echo "=== building fontconfig ${FONTCONFIG_VERSION} ==="
 cd /tmp
-wget -q "https://www.freedesktop.org/software/fontconfig/release/fontconfig-${FONTCONFIG_VERSION}.tar.gz"
-tar xf "fontconfig-${FONTCONFIG_VERSION}.tar.gz"
+fetch -O "fontconfig-${FONTCONFIG_VERSION}.tar" \
+        "https://www.freedesktop.org/software/fontconfig/release/fontconfig-${FONTCONFIG_VERSION}.tar.gz" \
+    || fetch -O "fontconfig-${FONTCONFIG_VERSION}.tar" \
+        "http://archive.ubuntu.com/ubuntu/pool/main/f/fontconfig/fontconfig_${FONTCONFIG_VERSION}.orig.tar.bz2"
+tar xf "fontconfig-${FONTCONFIG_VERSION}.tar"
 ( cd "fontconfig-${FONTCONFIG_VERSION}" \
     && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
         --enable-static --disable-shared --disable-docs \
@@ -152,7 +170,7 @@ rm -rf /tmp/fontconfig-*
 # of the Alpine release. Installed into /usr (Qt's default search path).
 echo "=== building xcb-proto ${XCB_PROTO_VERSION} ==="
 cd /tmp
-wget -q "${XORG_PROTO}/xcb-proto-${XCB_PROTO_VERSION}.tar.xz"
+fetch "${XORG_PROTO}/xcb-proto-${XCB_PROTO_VERSION}.tar.xz"
 tar xf "xcb-proto-${XCB_PROTO_VERSION}.tar.xz"
 ( cd "xcb-proto-${XCB_PROTO_VERSION}" && ./configure --prefix=/usr && make install )
 rm -rf /tmp/xcb-proto-*
@@ -167,7 +185,7 @@ for pkg in \
 do
     echo "=== building ${pkg} ==="
     cd /tmp
-    wget -q "${XORG_LIB}/${pkg}.tar.xz"
+    fetch "${XORG_LIB}/${pkg}.tar.xz"
     tar xf "${pkg}.tar.xz"
     # shellcheck disable=SC2086
     ( cd "${pkg}" && ./configure ${XCFG} && make -j"$JOBS" && make install )
